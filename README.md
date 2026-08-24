@@ -45,9 +45,12 @@ Tested against real-world .NET and Clean Architecture projects cloned directly f
 
 | Repository | Focus Area | Files Scanned | Architectural Findings | Scan Time | Top Architectural Signals |
 |---|---|:---:|:---:|:---:|---|
+| [**DapperLib/Dapper**](https://github.com/DapperLib/Dapper) | Micro-ORM / High-Perf IL | 51 | 159 | **0.082s** | `async_enumerable_stream`, `expression_tree_linq`, `null_forgiving` (70), `god_class_srp` |
+| [**jbogard/MediatR**](https://github.com/jbogard/MediatR) | Mediator Pipeline | 43 | 74 | **0.038s** | `generic_variance_in_out` (13), `mediator_pattern` (8), `primary_constructor` |
 | [**ardalis/CleanArchitecture**](https://github.com/ardalis/CleanArchitecture) | Clean Arch Template | 72 | 120 | **0.027s** | `primary_constructor` (18), `railway_result_monad` (14), `mediator_pattern` (5) |
+| [**jasontaylordev/CleanArchitecture**](https://github.com/jasontaylordev/CleanArchitecture) | CQRS / EF Core Clean Arch | 76 | 98 | **0.036s** | `mediator_pattern` (12), `command_pattern` (10), `dependency_injection` (6) |
 | [**examples/csharp_samples**](./examples/csharp_samples) | GoF 23/23 + Banking + Hazards | 3 | 48 | **0.005s** | All 23 GoF patterns, Channels, Options Pattern, Async Semaphore |
-| **TOTAL** | | **75** | **168** | **0.032s** | **~2,300 files/sec throughput** |
+| **TOTAL** | | **245** | **499** | **0.188s** | **~1,300 files/sec throughput** |
 
 ---
 

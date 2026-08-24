@@ -29,7 +29,7 @@ EXCLUDE_DIRS = {
 
 
 class NativeCSharpParserAdapter:
-    """Zero-dependency parser for C# (.cs) source files."""
+    """Zero-dependency high-speed parser for C# (.cs) source files."""
 
     def parse_project(self, project_path: str, excludes: Sequence[str] | None = None) -> CodeModel:
         """Parse all C# files in the directory into a CodeModel."""
@@ -83,12 +83,7 @@ class NativeCSharpParserAdapter:
         return mod
 
     def _parse_namespace(self, content: str) -> str:
-        # File-scoped: namespace Foo.Bar;
-        m = re.search(r"^\s*namespace\s+([\w\.]+)\s*;", content, re.MULTILINE)
-        if m:
-            return m.group(1)
-        # Block-scoped: namespace Foo.Bar {
-        m = re.search(r"^\s*namespace\s+([\w\.]+)\s*\{", content, re.MULTILINE)
+        m = re.search(r"^\s*namespace\s+([\w\.]+)\s*[;\{]", content, re.MULTILINE)
         if m:
             return m.group(1)
         return "Global"
@@ -96,158 +91,161 @@ class NativeCSharpParserAdapter:
     def _parse_usings(self, content: str) -> list[str]:
         usings = []
         for line in content.splitlines():
-            m = re.match(r"^\s*using\s+(?:static\s+)?([\w\.]+)\s*;", line)
-            if m:
-                usings.append(m.group(1))
+            line_s = line.strip()
+            if line_s.startswith("using ") and line_s.endswith(";"):
+                m = re.match(r"^using\s+(?:static\s+)?([\w\.]+)\s*;", line_s)
+                if m:
+                    usings.append(m.group(1))
         return usings
 
     def _parse_records(self, content: str, file_path: str) -> dict[str, CSRecord]:
         records: dict[str, CSRecord] = {}
-        # Matches: public readonly record struct Money(...) : IFoo
-        # or: public record User(string Name, int Age);
-        pattern = re.compile(
-            r"^\s*(?:\[[^\]]+\]\s*)*(?:public|internal|private|protected)?\s*(?:(readonly)\s+)?record\s+(struct|class)?\s*(\w+)(?:<[^>]+>)?\s*(?:\((.*?)\))?(?:\s*:\s*([\w\s,<>]+))?",
-            re.MULTILINE,
-        )
         for i, line in enumerate(content.splitlines(), 1):
-            for match in pattern.finditer(line):
-                is_ro = bool(match.group(1))
-                kind = match.group(2) or "class"
-                name = match.group(3)
-                params_raw = match.group(4) or ""
-                bases_raw = match.group(5) or ""
+            line_s = line.strip()
+            if not line_s or line_s.startswith("//") or line_s.startswith("/*") or line_s.startswith("*"):
+                continue
+            if " record " in line_s or line_s.startswith("record "):
+                m = re.search(r"\brecord\s+(struct|class)?\s*([A-Za-z0-9_]+)(?:<[^>]+>)?(?:\((.*?)\))?(?:\s*:\s*([^{;]+))?", line_s)
+                if m:
+                    kind = m.group(1) or "class"
+                    name = m.group(2)
+                    params_raw = m.group(3) or ""
+                    bases_raw = m.group(4) or ""
 
-                params = [p.strip() for p in params_raw.split(",") if p.strip()]
-                bases = [b.strip() for b in bases_raw.split(",") if b.strip()]
+                    params = [p.strip() for p in params_raw.split(",") if p.strip()]
+                    bases = [b.split("where")[0].split("{")[0].strip() for b in bases_raw.split(",") if b.strip()]
+                    clean_bases = [b for b in bases if b]
 
-                records[name] = CSRecord(
-                    name=name,
-                    is_struct=(kind == "struct"),
-                    is_readonly=is_ro,
-                    parameters=params,
-                    implements_list=bases,
-                    location=Location(file_path=file_path, start_line=i),
-                )
+                    is_ro = "readonly " in line_s
+                    records[name] = CSRecord(
+                        name=name,
+                        is_struct=(kind == "struct"),
+                        is_readonly=is_ro,
+                        parameters=params,
+                        implements_list=clean_bases,
+                        location=Location(file_path=file_path, start_line=i),
+                    )
         return records
 
     def _parse_interfaces(self, content: str, file_path: str) -> dict[str, CSInterface]:
         interfaces: dict[str, CSInterface] = {}
-        pattern = re.compile(
-            r"^\s*(?:\[[^\]]+\]\s*)*(?:public|internal|private|protected)?\s*interface\s+(\w+)(?:<([^>]+)>)?(?:\s*:\s*([\w\s,<>]+))?",
-            re.MULTILINE,
-        )
         for i, line in enumerate(content.splitlines(), 1):
-            m = pattern.search(line)
-            if m:
-                name = m.group(1)
-                generics = m.group(2) or ""
-                bases_raw = m.group(3) or ""
-                bases = [b.strip() for b in bases_raw.split(",") if b.strip()]
+            line_s = line.strip()
+            if not line_s or line_s.startswith("//") or line_s.startswith("/*") or line_s.startswith("*"):
+                continue
+            if " interface " in line_s or line_s.startswith("interface "):
+                m = re.search(r"\binterface\s+([A-Za-z0-9_]+)(?:<([^>]+)>)?(?:\s*:\s*([^{]+))?", line_s)
+                if m:
+                    name = m.group(1)
+                    generics = m.group(2) or ""
+                    bases_raw = m.group(3) or ""
+                    bases = [b.split("where")[0].split("{")[0].strip() for b in bases_raw.split(",") if b.strip()]
+                    clean_bases = [b for b in bases if b]
 
-                has_in_out = "out " in generics or "in " in generics
+                    has_in_out = "out " in generics or "in " in generics
 
-                # Scan methods inside interface (including single-line interfaces)
-                methods = []
-                method_pat = re.compile(r"([\w\.<>\[\]\?]+)\s+(\w+)\s*\(", re.MULTILINE)
-                lines_to_scan = content.splitlines()[i - 1 : min(len(content.splitlines()), i + 40)]
-                for idx, l in enumerate(lines_to_scan):
-                    if idx > 0 and "}" in l and "{" not in l:
-                        break
-                    # If this is the interface declaration line, search after the '{'
-                    chunk = l[l.find("{"):] if "{" in l else l
-                    for mm in method_pat.finditer(chunk):
-                        if mm.group(2) not in ("get", "set", "interface"):
-                            methods.append(mm.group(2))
+                    methods = []
+                    lines_to_scan = content.splitlines()[i - 1 : min(len(content.splitlines()), i + 40)]
+                    for idx, l in enumerate(lines_to_scan):
+                        if idx > 0 and "}" in l and "{" not in l:
+                            break
+                        chunk = l[l.find("{"):] if "{" in l else l
+                        for mm in re.finditer(r"([A-Za-z0-9_\.<>\[\]\?]+)\s+([A-Za-z0-9_]+)\s*\(", chunk):
+                            mth_name = mm.group(2)
+                            if mth_name not in ("get", "set", "interface", "where", "if", "for", "while"):
+                                methods.append(mth_name)
 
-                interfaces[name] = CSInterface(
-                    name=name,
-                    extends_list=bases,
-                    methods=methods,
-                    is_generic=bool(generics),
-                    has_in_out_variance=has_in_out,
-                    location=Location(file_path=file_path, start_line=i),
-                )
+                    interfaces[name] = CSInterface(
+                        name=name,
+                        extends_list=clean_bases,
+                        methods=methods,
+                        is_generic=bool(generics),
+                        has_in_out_variance=has_in_out,
+                        location=Location(file_path=file_path, start_line=i),
+                    )
         return interfaces
 
     def _parse_classes(self, content: str, file_path: str) -> dict[str, CSClass]:
         classes: dict[str, CSClass] = {}
-        # Regex for class: [Attr] public abstract class Foo<T>(IBar bar) : BaseClass, IFoo
-        pattern = re.compile(
-            r"^\s*(?:\[([^\]]+)\]\s*)*(?:(public|internal|private|protected)\s+)?(?:(abstract|sealed|static|partial)\s+)?class\s+(\w+)(?:<[^>]+>)?(?:\((.*?)\))?(?:\s*:\s*([\w\s,<>]+))?",
-            re.MULTILINE,
-        )
-        lines = content.splitlines()
-        for i, line in enumerate(lines, 1):
-            m = pattern.search(line)
-            if m and "record " not in line:
-                attr_raw = m.group(1) or ""
-                visibility = m.group(2) or "internal"
-                modifier = m.group(3) or ""
-                name = m.group(4)
-                primary_ctor = m.group(5)
-                bases_raw = m.group(6) or ""
+        for i, line in enumerate(content.splitlines(), 1):
+            line_s = line.strip()
+            if not line_s or line_s.startswith("//") or line_s.startswith("/*") or line_s.startswith("*"):
+                continue
+            if " class " in line_s or line_s.startswith("class "):
+                if "record " in line_s:
+                    continue
+                m = re.search(r"\bclass\s+([A-Za-z0-9_]+)(?:<[^>]+>)?(?:\((.*?)\))?(?:\s*:\s*([^{]+))?", line_s)
+                if m:
+                    name = m.group(1)
+                    primary_ctor = m.group(2)
+                    bases_raw = m.group(3) or ""
+                    bases = [b.split("where")[0].split("{")[0].strip() for b in bases_raw.split(",") if b.strip()]
+                    clean_bases = [b for b in bases if b]
 
-                bases = [b.strip() for b in bases_raw.split(",") if b.strip()]
-                extends_name = bases[0] if bases and not bases[0].startswith("I") else None
-                implements_list = [b for b in bases if b != extends_name]
+                    extends_name = clean_bases[0] if clean_bases and not clean_bases[0].startswith("I") else None
+                    implements_list = [b for b in clean_bases if b != extends_name]
 
-                constructor_params = []
-                if primary_ctor:
-                    constructor_params = [p.strip() for p in primary_ctor.split(",") if p.strip()]
+                    constructor_params = [p.strip() for p in primary_ctor.split(",") if p.strip()] if primary_ctor else []
+                    is_abstract = "abstract " in line_s
+                    is_sealed = "sealed " in line_s
+                    is_static = "static " in line_s
 
-                attrs = [a.strip() for a in attr_raw.split(",") if a.strip()]
-
-                classes[name] = CSClass(
-                    name=name,
-                    extends_name=extends_name,
-                    implements_list=implements_list,
-                    modifiers=[visibility] + ([modifier] if modifier else []),
-                    attributes=attrs,
-                    constructor_params=constructor_params,
-                    is_abstract=(modifier == "abstract"),
-                    is_sealed=(modifier == "sealed"),
-                    is_static=(modifier == "static"),
-                    has_primary_constructor=bool(primary_ctor is not None),
-                    location=Location(file_path=file_path, start_line=i),
-                )
+                    classes[name] = CSClass(
+                        name=name,
+                        extends_name=extends_name,
+                        implements_list=implements_list,
+                        modifiers=["public" if "public " in line_s else "internal"],
+                        constructor_params=constructor_params,
+                        is_abstract=is_abstract,
+                        is_sealed=is_sealed,
+                        is_static=is_static,
+                        has_primary_constructor=bool(primary_ctor is not None),
+                        location=Location(file_path=file_path, start_line=i),
+                    )
         return classes
 
     def _parse_structs(self, content: str, file_path: str) -> dict[str, CSStruct]:
         structs: dict[str, CSStruct] = {}
-        pattern = re.compile(
-            r"^\s*(?:(readonly|ref)\s+)?struct\s+(\w+)(?:\s*:\s*([\w\s,<>]+))?",
-            re.MULTILINE,
-        )
         for i, line in enumerate(content.splitlines(), 1):
-            if "record " in line:
+            line_s = line.strip()
+            if not line_s or line_s.startswith("//") or line_s.startswith("/*") or line_s.startswith("*"):
                 continue
-            m = pattern.search(line)
-            if m:
-                mod = m.group(1) or ""
-                name = m.group(2)
-                bases_raw = m.group(3) or ""
-                bases = [b.strip() for b in bases_raw.split(",") if b.strip()]
+            if " struct " in line_s or line_s.startswith("struct "):
+                if "record " in line_s:
+                    continue
+                m = re.search(r"\bstruct\s+([A-Za-z0-9_]+)(?:<[^>]+>)?(?:\s*:\s*([^{]+))?", line_s)
+                if m:
+                    name = m.group(1)
+                    bases_raw = m.group(2) or ""
+                    bases = [b.split("where")[0].split("{")[0].strip() for b in bases_raw.split(",") if b.strip()]
+                    clean_bases = [b for b in bases if b]
 
-                structs[name] = CSStruct(
-                    name=name,
-                    is_readonly=(mod == "readonly"),
-                    is_ref=(mod == "ref"),
-                    implements_list=bases,
-                    location=Location(file_path=file_path, start_line=i),
-                )
+                    is_ro = "readonly " in line_s
+                    is_ref = "ref " in line_s
+
+                    structs[name] = CSStruct(
+                        name=name,
+                        is_readonly=is_ro,
+                        is_ref=is_ref,
+                        implements_list=clean_bases,
+                        location=Location(file_path=file_path, start_line=i),
+                    )
         return structs
 
     def _parse_enums(self, content: str, file_path: str) -> dict[str, CSEnum]:
         enums: dict[str, CSEnum] = {}
-        pattern = re.compile(r"^\s*(?:\[Flags\]\s*)?(?:public|internal)?\s*enum\s+(\w+)", re.MULTILINE)
         for i, line in enumerate(content.splitlines(), 1):
-            m = pattern.search(line)
-            if m:
-                name = m.group(1)
-                is_flags = "[Flags]" in content[:content.find(line) + len(line)]
-                enums[name] = CSEnum(
-                    name=name,
-                    is_flags=is_flags,
-                    location=Location(file_path=file_path, start_line=i),
-                )
+            line_s = line.strip()
+            if not line_s or line_s.startswith("//") or line_s.startswith("/*") or line_s.startswith("*"):
+                continue
+            if " enum " in line_s or line_s.startswith("enum "):
+                m = re.search(r"\benum\s+([A-Za-z0-9_]+)", line_s)
+                if m:
+                    name = m.group(1)
+                    is_flags = "[Flags]" in content[:content.find(line) + len(line)]
+                    enums[name] = CSEnum(
+                        name=name,
+                        is_flags=is_flags,
+                        location=Location(file_path=file_path, start_line=i),
+                    )
         return enums

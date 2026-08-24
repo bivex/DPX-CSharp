@@ -115,28 +115,30 @@ class TryCatchBlanketSwallowRule(BasePatternRule):
 
     def detect(self, model: CodeModel) -> list[Detection]:
         detections = []
-        # Matches catch blocks where body contains only whitespace or comments
-        catch_pattern = re.compile(
-            r"catch\s*(?:\(\s*Exception(?:\s+\w+)?\s*\))?\s*\{(?:\s*//[^\n]*\s*|\s*)*\}",
-            re.MULTILINE,
-        )
         for m in model.all_modules():
-            for match in catch_pattern.finditer(m.raw_source):
-                line_no = m.raw_source[:match.start()].count("\n") + 1
-                evidences = [
-                    Evidence(
-                        description="Blanket `catch (Exception) {}` swallows errors without logging or remediation",
-                        weight=0.90,
-                        rule_code="HAZARD_TRY_CATCH_BLANKET_SWALLOW",
-                        location=Location(file_path=m.path, start_line=line_no),
-                    )
-                ]
-                detections.append(self._create_detection(
-                    target_name=f"{m.namespace}.{m.name}:L{line_no}",
-                    target_kind="catch_swallow_hazard",
-                    evidences=evidences,
-                    location=Location(file_path=m.path, start_line=line_no),
-                ))
+            raw = m.raw_source
+            for match in re.finditer(r"\bcatch(?:\s*\([^)]*\))?\s*\{", raw):
+                start_idx = match.end()
+                close_idx = raw.find("}", start_idx)
+                if close_idx != -1 and (close_idx - start_idx) < 150:
+                    body = raw[start_idx:close_idx].strip()
+                    body_lines = [l.strip() for l in body.splitlines() if l.strip()]
+                    if not body_lines or all(l.startswith("//") or l.startswith("/*") or l.startswith("*") for l in body_lines):
+                        line_no = raw[:match.start()].count("\n") + 1
+                        evidences = [
+                            Evidence(
+                                description="Blanket `catch` block swallows errors without logging or remediation",
+                                weight=0.90,
+                                rule_code="HAZARD_TRY_CATCH_BLANKET_SWALLOW",
+                                location=Location(file_path=m.path, start_line=line_no),
+                            )
+                        ]
+                        detections.append(self._create_detection(
+                            target_name=f"{m.namespace}.{m.name}:L{line_no}",
+                            target_kind="catch_swallow_hazard",
+                            evidences=evidences,
+                            location=Location(file_path=m.path, start_line=line_no),
+                        ))
         return detections
 
 
