@@ -1,0 +1,4 @@
+*.html linguist-documentation
+docs/** linguist-documentation
+reports/** linguist-documentation
+benchmarks_cache/** linguist-vendored

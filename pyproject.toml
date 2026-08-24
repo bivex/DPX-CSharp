@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dpx-csharp"
+version = "0.1.0"
+description = "Hexagonal Architecture Design Pattern Detector & Observability HUD for C# / .NET (.NET 6-9+, C# 10-13, ASP.NET Core, EF Core)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Bivex Team", email = "dev@bivex.io" }
+]
+dependencies = [
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+dpx-csharp = "pattern_detector.adapters.inbound.cli.main:app"
+dpx-cs = "pattern_detector.adapters.inbound.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pattern_detector"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
